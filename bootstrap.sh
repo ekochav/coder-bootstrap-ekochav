@@ -117,7 +117,7 @@ sudo npm install -g npm@latest || true
 
 # Copilot CLI: package names change occasionally; tolerate failure
 # Option A: npm package (may be named 'github-copilot-cli' depending on version)
-sudo npm install -g github-copilot-cli || true
+sudo npm install -g @github/copilot
 # Option B: gh extension (requires GitHub CLI)
 # gh extension install github/gh-copilot || true
 
@@ -131,3 +131,77 @@ echo "npm:      $(npm --version 2>/dev/null || echo 'n/a')"
 
 echo "== $(date -Iseconds) :: bootstrap done =="
 exit 0
+
+
+
+# Install or update Claude Code (native installer).
+# Official installer supports Linux/WSL. Use --latest if requested.  :contentReference[oaicite:1]{index=1}
+if ! command -v claude >/dev/null 2>&1; then
+  echo "[claude] installing..."
+  if [[ -n "${FORCE_LATEST}" ]]; then
+    curl -fsSL https://claude.ai/install.sh | bash -s latest
+  else
+    curl -fsSL https://claude.ai/install.sh | bash
+  fi
+else
+  echo "[claude] already installed -> running update check"
+  claude update || true
+fi
+
+# Ensure ~/.local/bin is on PATH for future shells (installer normally handles this, but be safe).
+if ! echo ":$PATH:" | grep -qi ":${HOME}/.local/bin:"; then
+  if ! grep -q 'export PATH="$HOME/.local/bin:$PATH"' "${HOME}/.profile" 2>/dev/null; then
+    echo 'export PATH="$HOME/.local/bin:$PATH"' >> "${HOME}/.profile"
+  fi
+  export PATH="$HOME/.local/bin:$PATH"
+fi
+
+# Configure Bedrock via user settings (safer than exporting globals).
+# Doc: set env vars in settings.json; AWS_REGION & CLAUDE_CODE_USE_BEDROCK required.  :contentReference[oaicite:2]{index=2}
+CFG_DIR="${HOME}/.claude"
+CFG_FILE="${CFG_DIR}/settings.json"
+mkdir -p "${CFG_DIR}"
+[[ -f "${CFG_FILE}" ]] || echo '{}' > "${CFG_FILE}"
+
+TMP="$(mktemp)"
+jq \
+  --arg region "${REGION}" \
+  --arg token  "${TOKEN}" \
+  '
+  .env = (.env // {}) + {
+    "CLAUDE_CODE_USE_BEDROCK":"1",
+    "AWS_REGION": $region,
+    "AWS_BEARER_TOKEN_BEDROCK": $token,
+    # Bedrock tuning recommended in docs:
+    "CLAUDE_CODE_MAX_OUTPUT_TOKENS":"4096",
+    "MAX_THINKING_TOKENS":"1024"
+  }
+  ' "${CFG_FILE}" > "${TMP}"
+mv "${TMP}" "${CFG_FILE}"
+chmod 600 "${CFG_FILE}"
+
+echo "[claude] configuration written to ${CFG_FILE}"
+
+# Optional: pre-pin default models (kept here in case your region needs explicit pins).  :contentReference[oaicite:3]{index=3}
+# Uncomment and edit if you want to force specific profiles/models:
+# jq '.env += {"ANTHROPIC_MODEL":"global.anthropic.claude-sonnet-4-5-20250929-v1:0","ANTHROPIC_SMALL_FAST_MODEL":"us.anthropic.claude-haiku-4-5-20251001-v1:0"}' \
+#    "${CFG_FILE}" > "${CFG_FILE}.tmp" && mv "${CFG_FILE}.tmp" "${CFG_FILE}"
+
+# Final sanity check
+echo
+echo "[claude] running doctor..."
+set +e
+claude doctor
+STATUS=$?
+set -e
+if [[ $STATUS -ne 0 ]]; then
+  cat <<'EOF'
+[warn] 'claude doctor' exited non-zero. Common fixes:
+  - Make sure your AWS Bedrock *use-case form* is completed in the AWS console.
+  - Confirm models exist in your region or set ANTHROPIC_MODEL to an inference profile ARN.
+  - If you use SSO or short-lived tokens, ensure the token is valid now.
+EOF
+fi
+
+echo
+echo "Done. Open a repo and run:  claude"
